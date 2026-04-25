@@ -1,18 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { sql, initDB } from '@/app/lib/db';
 import { containsProfanity } from '@/app/lib/profanity';
-
-function getIp(req: NextRequest): string {
-  return (
-    req.headers.get('x-forwarded-for')?.split(',')[0].trim() ??
-    req.headers.get('x-real-ip') ??
-    'unknown'
-  );
-}
+import { getFingerprint } from '@/app/lib/fingerprint';
 
 export async function GET(request: NextRequest) {
   await initDB();
-  const ip = getIp(request);
+  const ip = getFingerprint(request);
 
   const { rows } = await sql`
     SELECT
@@ -34,7 +27,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   await initDB();
-  const ip = getIp(request);
+  const ip = getFingerprint(request);
 
   const body = await request.json();
   const title = String(body.title ?? '').trim().slice(0, 200);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 interface Song {
   id: number;
@@ -21,9 +21,29 @@ export default function GuestPage() {
   const [message, setMessage] = useState<{ text: string; ok: boolean } | null>(null);
   const [votingId, setVotingId] = useState<number | null>(null);
 
+  // Stable ref – avoids re-creating fetchSongs / restarting the poll interval
+  const clientIdRef = useRef('');
+
+  useEffect(() => {
+    let id = localStorage.getItem('dj-guest-id');
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem('dj-guest-id', id);
+    }
+    clientIdRef.current = id;
+  }, []);
+
+  const clientHeaders = useCallback(
+    (extra: Record<string, string> = {}): Record<string, string> => ({
+      'x-client-id': clientIdRef.current,
+      ...extra,
+    }),
+    []
+  );
+
   const fetchSongs = useCallback(async () => {
     try {
-      const res = await fetch('/api/songs');
+      const res = await fetch('/api/songs', { headers: clientHeaders() });
       if (res.ok) {
         setSongs(await res.json());
       }
@@ -32,7 +52,7 @@ export default function GuestPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [clientHeaders]);
 
   useEffect(() => {
     fetchSongs();
@@ -54,7 +74,7 @@ export default function GuestPage() {
     try {
       const res = await fetch('/api/songs', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: clientHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ title: title.trim(), artist: artist.trim() }),
       });
       const data = await res.json().catch(() => ({}));
@@ -103,7 +123,7 @@ export default function GuestPage() {
 
     await fetch(song.has_voted ? '/api/songs/unvote' : '/api/songs/vote', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: clientHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ songId: song.id }),
     });
 
