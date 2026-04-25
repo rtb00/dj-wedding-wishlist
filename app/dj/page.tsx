@@ -205,6 +205,8 @@ export default function DJPage() {
                       rank={null}
                       onToggle={handleToggle}
                       toggling={togglingId === song.id}
+                      onDelete={handleDelete}
+                      deleting={deletingId === song.id}
                     />
                   ))}
                 </div>
