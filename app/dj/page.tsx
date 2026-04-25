@@ -1,322 +1,303 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
 
-interface Song {
+interface Event {
   id: number;
+  slug: string;
   title: string;
-  artist: string;
+  subtitle: string | null;
+  active: boolean;
   created_at: string;
-  played: boolean;
-  vote_count: number;
+  song_count: number;
 }
 
-const STORAGE_KEY = 'dj-auth-token';
+function generateSlug(title: string): string {
+  return title
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
 
-export default function DJPage() {
-  const [token, setToken] = useState<string | null>(null);
-  const [password, setPassword] = useState('');
-  const [authError, setAuthError] = useState('');
-  const [songs, setSongs] = useState<Song[]>([]);
+export default function DJDashboard() {
+  const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
-  const [togglingId, setTogglingId] = useState<number | null>(null);
-  const [deletingId, setDeletingId] = useState<number | null>(null);
-  const [guestUrl, setGuestUrl] = useState('');
+
+  // Create form
+  const [showForm, setShowForm] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [formTitle, setFormTitle] = useState('');
+  const [formSubtitle, setFormSubtitle] = useState('');
+  const [formSlug, setFormSlug] = useState('');
+  const [formPassword, setFormPassword] = useState('hochzeit2027');
+
+  // Edit
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editData, setEditData] = useState<{ title: string; subtitle: string }>({
+    title: '',
+    subtitle: '',
+  });
 
   useEffect(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) setToken(saved);
-    else setLoading(false);
+    loadEvents();
   }, []);
 
-  useEffect(() => {
-    setGuestUrl(window.location.origin);
-  }, []);
-
-  const fetchSongs = useCallback(async () => {
+  async function loadEvents() {
+    setLoading(true);
     try {
-      const res = await fetch('/api/songs');
+      const res = await fetch('/api/events');
       if (res.ok) {
-        setSongs(await res.json());
+        setEvents(await res.json());
       }
     } catch {
-      // Network error – ignore
+      // ignore
     } finally {
       setLoading(false);
     }
-  }, []);
+  }
 
-  useEffect(() => {
-    if (!token) return;
-    fetchSongs();
-    const interval = setInterval(fetchSongs, 3000);
-    return () => clearInterval(interval);
-  }, [token, fetchSongs]);
-
-  async function handleLogin(e: React.FormEvent) {
+  async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
-    setAuthError('');
-    const res = await fetch('/api/dj/auth', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    if (res.ok) {
-      localStorage.setItem(STORAGE_KEY, password);
-      setToken(password);
-    } else {
-      setAuthError('Falsches Passwort.');
+    setFormError('');
+
+    if (!formTitle.trim()) {
+      setFormError('Titel ist erforderlich.');
+      return;
+    }
+    const slug = formSlug || generateSlug(formTitle);
+    if (!slug || !/^[a-z0-9][a-z0-9-]{1,}$/.test(slug)) {
+      setFormError('Slug muss mind. 2 Zeichen lang sein und nur a-z, 0-9 und - enthalten.');
+      return;
+    }
+
+    setCreating(true);
+    try {
+      const res = await fetch('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: formTitle.trim(),
+          subtitle: formSubtitle.trim() || undefined,
+          slug,
+          djPassword: formPassword.trim() || 'hochzeit2027',
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFormError(data.error ?? 'Fehler beim Erstellen.');
+        return;
+      }
+      // Reset
+      setFormTitle('');
+      setFormSubtitle('');
+      setFormSlug('');
+      setFormPassword('hochzeit2027');
+      setShowForm(false);
+      loadEvents();
+    } catch {
+      setFormError('Verbindungsfehler.');
+    } finally {
+      setCreating(false);
     }
   }
 
-  async function handleToggle(songId: number) {
-    if (togglingId !== null || !token) return;
-    setTogglingId(songId);
-    setSongs((prev) =>
-      prev.map((s) => (s.id === songId ? { ...s, played: !s.played } : s))
-    );
-    await fetch('/api/dj/toggle-played', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-dj-token': token },
-      body: JSON.stringify({ songId }),
+  async function handleToggleActive(event: Event) {
+    await fetch(`/api/events/${event.slug}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !event.active }),
     });
-    setTogglingId(null);
-    fetchSongs();
+    loadEvents();
   }
 
-  async function handleDelete(songId: number, title: string) {
-    if (!token || !confirm(`"${title}" wirklich löschen?`)) return;
-    setDeletingId(songId);
-    setSongs((prev) => prev.filter((s) => s.id !== songId));
-    await fetch('/api/dj/delete-song', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-dj-token': token },
-      body: JSON.stringify({ songId }),
+  async function handleEdit(event: Event, data: { title: string; subtitle: string }) {
+    await fetch(`/api/events/${event.slug}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: data.title, subtitle: data.subtitle || null }),
     });
-    setDeletingId(null);
+    setEditingId(null);
+    loadEvents();
   }
 
-  function handleLogout() {
-    localStorage.removeItem(STORAGE_KEY);
-    setToken(null);
-    setPassword('');
-    setSongs([]);
-  }
+  return (
+    <div className="min-h-screen bg-cream">
+      {/* Header */}
+      <div className="text-center pt-10 pb-6 px-4">
+        <p className="text-gold text-3xl mb-1">♪</p>
+        <h1 className="font-serif text-4xl font-semibold text-ink">DJ-Dashboard</h1>
+        <p className="text-muted mt-1 text-sm">Events verwalten</p>
+      </div>
 
-  // ── Login screen ──────────────────────────────────────────────────────────
-  if (!token) {
-    return (
-      <div className="min-h-screen bg-cream flex items-center justify-center p-8">
-        <div className="w-full max-w-sm">
-          <div className="text-center mb-8">
-            <p className="text-gold text-3xl mb-2">♪</p>
-            <h1 className="font-serif text-3xl font-semibold text-ink">DJ-Ansicht</h1>
-          </div>
+      <div className="px-4 max-w-2xl mx-auto pb-16">
+        {/* Create button */}
+        <div className="mb-4 flex justify-end">
+          <button
+            onClick={() => setShowForm((v) => !v)}
+            className="px-5 py-2.5 bg-gold text-cream rounded-2xl font-semibold hover:opacity-90 active:scale-95 transition-all"
+          >
+            + Neues Event erstellen
+          </button>
+        </div>
+
+        {/* Create form */}
+        {showForm && (
           <form
-            onSubmit={handleLogin}
-            className="bg-ivory rounded-3xl p-6 border border-champagne shadow-sm space-y-4"
+            onSubmit={handleCreate}
+            className="mb-6 bg-ivory rounded-3xl p-5 border border-champagne shadow-sm space-y-3 animate-fade-up"
           >
             <input
-              type="password"
-              placeholder="Passwort"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoFocus
-              className="w-full px-4 py-4 rounded-2xl border border-champagne bg-cream text-ink text-xl tracking-widest placeholder:tracking-normal placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors"
+              type="text"
+              placeholder="Titel *"
+              value={formTitle}
+              onChange={(e) => {
+                setFormTitle(e.target.value);
+                if (!formSlug) setFormSlug(generateSlug(e.target.value));
+              }}
+              className="w-full px-4 py-3 rounded-2xl border border-champagne bg-cream text-ink placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors"
             />
-            {authError && (
-              <p className="text-red-600 text-sm text-center">{authError}</p>
+            <input
+              type="text"
+              placeholder="Untertitel (optional)"
+              value={formSubtitle}
+              onChange={(e) => setFormSubtitle(e.target.value)}
+              className="w-full px-4 py-3 rounded-2xl border border-champagne bg-cream text-ink placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors"
+            />
+            <div className="flex items-center gap-2">
+              <span className="text-muted font-mono text-sm shrink-0">/</span>
+              <input
+                type="text"
+                placeholder="slug"
+                value={formSlug}
+                onChange={(e) =>
+                  setFormSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))
+                }
+                className="flex-1 px-4 py-3 rounded-2xl border border-champagne bg-cream text-ink font-mono placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors"
+              />
+            </div>
+            <input
+              type="text"
+              placeholder="DJ-Passwort"
+              value={formPassword}
+              onChange={(e) => setFormPassword(e.target.value)}
+              className="w-full px-4 py-3 rounded-2xl border border-champagne bg-cream text-ink placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors"
+            />
+            {formError && (
+              <p className="text-red-600 text-sm text-center">{formError}</p>
             )}
             <button
               type="submit"
-              className="w-full py-4 bg-ink text-cream rounded-2xl text-lg font-semibold hover:opacity-90 active:scale-95 transition-all"
+              disabled={creating}
+              className="w-full py-3 bg-ink text-cream rounded-2xl font-semibold hover:opacity-90 active:scale-95 disabled:opacity-50 transition-all"
             >
-              Einloggen
+              {creating ? 'Erstelle…' : 'Event erstellen'}
             </button>
           </form>
-        </div>
-      </div>
-    );
-  }
+        )}
 
-  // ── DJ split-screen view ──────────────────────────────────────────────────
-  const unplayed = songs.filter((s) => !s.played);
-  const played = songs.filter((s) => s.played);
-
-  return (
-    <div className="h-screen flex flex-col bg-cream overflow-hidden">
-      {/* Header */}
-      <div className="shrink-0 bg-ivory border-b border-champagne px-6 py-3 flex items-center justify-between">
-        <h1 className="font-serif text-xl font-semibold text-ink">DJ-Ansicht</h1>
-        <div className="flex items-center gap-4">
-          <span className="text-muted text-sm">
-            {unplayed.length} offen · {played.length} gespielt
-          </span>
-          <span className="w-2 h-2 rounded-full bg-gold animate-pulse" title="Live" />
-          <button
-            onClick={handleLogout}
-            className="text-muted text-sm hover:text-ink transition-colors"
-          >
-            Logout
-          </button>
-        </div>
-      </div>
-
-      {/* Split body */}
-      <div className="flex-1 flex overflow-hidden">
-
-        {/* ── Left: QR panel ─────────────────────────────────────────────── */}
-        <div className="w-72 xl:w-80 shrink-0 flex flex-col items-center justify-center gap-5 p-8">
-          <div className="text-center">
-            <p className="text-gold text-xl mb-1">♪</p>
-            <h2 className="font-serif text-2xl font-semibold text-ink leading-tight">
-              Musikwünsche
-            </h2>
-            <p className="text-muted text-sm mt-1">Scanne mich!</p>
-          </div>
-
-          {guestUrl ? (
-            <div className="bg-white rounded-3xl p-4 border-2 border-champagne shadow-[0_4px_20px_rgba(201,169,97,0.18)]">
-              <QRCodeSVG
-                value={guestUrl}
-                size={200}
-                fgColor="#2a2520"
-                bgColor="#ffffff"
-                level="M"
-              />
-            </div>
-          ) : (
-            <div className="w-[232px] h-[232px] rounded-3xl bg-ivory border-2 border-champagne animate-pulse" />
-          )}
-
-          <p className="text-muted/60 text-xs text-center font-mono break-all leading-relaxed max-w-[220px]">
-            {guestUrl}
-          </p>
-        </div>
-
-        {/* ── Gold divider ────────────────────────────────────────────────── */}
-        <div className="py-8 shrink-0 flex items-stretch">
-          <div className="w-px bg-gold/30" />
-        </div>
-
-        {/* ── Right: Song list ─────────────────────────────────────────────── */}
-        <div className="flex-1 overflow-y-auto p-5 xl:p-8 pb-16">
-          {loading ? (
-            <p className="text-center text-muted py-12">Lädt…</p>
-          ) : unplayed.length === 0 && played.length === 0 ? (
-            <p className="text-center text-muted py-12">Noch keine Vorschläge.</p>
-          ) : (
-            <>
-              <div className="space-y-3">
-                {unplayed.map((song, i) => (
-                  <DJCard
-                    key={song.id}
-                    song={song}
-                    rank={i + 1}
-                    onToggle={handleToggle}
-                    toggling={togglingId === song.id}
-                    onDelete={handleDelete}
-                    deleting={deletingId === song.id}
-                  />
-                ))}
+        {/* Event list */}
+        {loading ? (
+          <p className="text-center text-muted py-12">Lädt…</p>
+        ) : events.length === 0 ? (
+          <p className="text-center text-muted py-12">Noch keine Events. Erstelle dein erstes!</p>
+        ) : (
+          <div className="space-y-4">
+            {events.map((event) => (
+              <div
+                key={event.id}
+                className={`bg-ivory rounded-3xl p-5 border border-champagne shadow-sm transition-opacity ${
+                  event.active ? '' : 'opacity-50'
+                }`}
+              >
+                {editingId === event.id ? (
+                  /* Inline edit form */
+                  <div className="space-y-3">
+                    <input
+                      type="text"
+                      value={editData.title}
+                      onChange={(e) => setEditData((d) => ({ ...d, title: e.target.value }))}
+                      className="w-full px-4 py-3 rounded-2xl border border-champagne bg-cream text-ink focus:outline-none focus:border-gold transition-colors"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Untertitel (optional)"
+                      value={editData.subtitle}
+                      onChange={(e) => setEditData((d) => ({ ...d, subtitle: e.target.value }))}
+                      className="w-full px-4 py-3 rounded-2xl border border-champagne bg-cream text-ink placeholder:text-muted/50 focus:outline-none focus:border-gold transition-colors"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => handleEdit(event, editData)}
+                        className="px-4 py-2 bg-ink text-cream rounded-xl text-sm font-semibold hover:opacity-90 active:scale-95 transition-all"
+                      >
+                        Speichern
+                      </button>
+                      <button
+                        onClick={() => setEditingId(null)}
+                        className="px-4 py-2 bg-cream text-muted rounded-xl text-sm border border-champagne hover:border-ink hover:text-ink transition-all"
+                      >
+                        Abbrechen
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* Normal card */
+                  <div>
+                    <div className="flex items-start justify-between gap-3 mb-1">
+                      <div className="min-w-0">
+                        <h2 className="font-serif text-xl font-semibold text-ink truncate">
+                          {event.title}
+                        </h2>
+                        {event.subtitle && (
+                          <p className="text-muted text-sm truncate">{event.subtitle}</p>
+                        )}
+                        <p className="text-muted/60 text-xs font-mono mt-0.5">/{event.slug}</p>
+                        <p className="text-muted text-xs mt-0.5">{event.song_count} Songs</p>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => handleToggleActive(event)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all active:scale-95 ${
+                            event.active
+                              ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
+                              : 'bg-cream text-muted border border-champagne hover:border-ink hover:text-ink'
+                          }`}
+                        >
+                          {event.active ? 'Aktiv' : 'Inaktiv'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            setEditingId(event.id);
+                            setEditData({
+                              title: event.title,
+                              subtitle: event.subtitle ?? '',
+                            });
+                          }}
+                          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-cream text-muted border border-champagne hover:border-ink hover:text-ink transition-all active:scale-95"
+                        >
+                          Bearbeiten
+                        </button>
+                      </div>
+                    </div>
+                    <Link
+                      href={`/dj/${event.slug}`}
+                      className="inline-block mt-2 text-gold text-sm font-medium hover:underline"
+                    >
+                      DJ-View →
+                    </Link>
+                  </div>
+                )}
               </div>
-
-              {played.length > 0 && (
-                <div className="mt-8">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="flex-1 h-px bg-champagne" />
-                    <span className="text-muted text-xs uppercase tracking-widest">
-                      Gespielt
-                    </span>
-                    <div className="flex-1 h-px bg-champagne" />
-                  </div>
-                  <div className="space-y-3 opacity-50">
-                    {played.map((song) => (
-                      <DJCard
-                        key={song.id}
-                        song={song}
-                        rank={null}
-                        onToggle={handleToggle}
-                        toggling={togglingId === song.id}
-                        onDelete={handleDelete}
-                        deleting={deletingId === song.id}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DJCard({
-  song,
-  rank,
-  onToggle,
-  toggling,
-  onDelete,
-  deleting,
-}: {
-  song: Song;
-  rank: number | null;
-  onToggle: (id: number) => void;
-  toggling: boolean;
-  onDelete: (id: number, title: string) => void;
-  deleting: boolean;
-}) {
-  return (
-    <div className="bg-ivory rounded-3xl p-4 flex items-center gap-3 border border-champagne shadow-sm">
-      {rank !== null && (
-        <span className="font-serif text-4xl font-bold text-champagne w-10 text-center shrink-0 tabular-nums">
-          {rank}
-        </span>
-      )}
-      <div className="flex-1 min-w-0">
-        <p className="font-semibold text-ink text-lg leading-tight truncate">
-          {song.title}
-        </p>
-        <p className="text-muted text-sm truncate">{song.artist}</p>
-        <p className="text-champagne text-xs mt-0.5">
-          {new Date(song.created_at).toLocaleTimeString('de-DE', {
-            hour: '2-digit',
-            minute: '2-digit',
-          })}
-        </p>
-      </div>
-      <div className="flex items-center gap-2 shrink-0">
-        <span className="text-gold font-bold text-xl tabular-nums">
-          ♥ {song.vote_count}
-        </span>
-        <button
-          onClick={() => onToggle(song.id)}
-          disabled={toggling || deleting}
-          className={`
-            px-4 py-2.5 rounded-2xl font-semibold text-sm transition-all active:scale-95
-            ${
-              song.played
-                ? 'bg-cream text-muted border border-champagne hover:border-ink hover:text-ink'
-                : 'bg-ink text-cream hover:opacity-90'
-            }
-            ${toggling ? 'opacity-50 cursor-wait' : ''}
-          `}
-        >
-          {song.played ? '↩ Zurück' : '✓ Gespielt'}
-        </button>
-        <button
-          onClick={() => onDelete(song.id, song.title)}
-          disabled={deleting || toggling}
-          aria-label="Song löschen"
-          className="p-2.5 rounded-2xl text-muted border border-champagne hover:border-red-300 hover:text-red-500 hover:bg-red-50 transition-all active:scale-95 disabled:opacity-30"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4">
-            <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.519.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
-          </svg>
-        </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
