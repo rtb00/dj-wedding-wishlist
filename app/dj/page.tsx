@@ -20,6 +20,7 @@ export default function DJPage() {
   const [songs, setSongs] = useState<Song[]>([]);
   const [loading, setLoading] = useState(true);
   const [togglingId, setTogglingId] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -80,6 +81,18 @@ export default function DJPage() {
 
     setTogglingId(null);
     fetchSongs();
+  }
+
+  async function handleDelete(songId: number, title: string) {
+    if (!token || !confirm(`"${title}" wirklich löschen?`)) return;
+    setDeletingId(songId);
+    setSongs((prev) => prev.filter((s) => s.id !== songId));
+    await fetch('/api/dj/delete-song', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dj-token': token },
+      body: JSON.stringify({ songId }),
+    });
+    setDeletingId(null);
   }
 
   function handleLogout() {
@@ -168,6 +181,8 @@ export default function DJPage() {
                   rank={i + 1}
                   onToggle={handleToggle}
                   toggling={togglingId === song.id}
+                  onDelete={handleDelete}
+                  deleting={deletingId === song.id}
                 />
               ))}
             </div>
@@ -207,11 +222,15 @@ function DJCard({
   rank,
   onToggle,
   toggling,
+  onDelete,
+  deleting,
 }: {
   song: Song;
   rank: number | null;
   onToggle: (id: number) => void;
   toggling: boolean;
+  onDelete: (id: number, title: string) => void;
+  deleting: boolean;
 }) {
   return (
     <div className="bg-ivory rounded-3xl p-5 flex items-center gap-4 border border-champagne shadow-sm">
@@ -232,13 +251,13 @@ function DJCard({
           })}
         </p>
       </div>
-      <div className="flex items-center gap-4 shrink-0">
+      <div className="flex items-center gap-3 shrink-0">
         <span className="text-gold font-bold text-2xl tabular-nums">
           ♥ {song.vote_count}
         </span>
         <button
           onClick={() => onToggle(song.id)}
-          disabled={toggling}
+          disabled={toggling || deleting}
           className={`
             px-5 py-3 rounded-2xl font-semibold text-base transition-all active:scale-95
             ${
@@ -250,6 +269,16 @@ function DJCard({
           `}
         >
           {song.played ? '↩ Zurück' : '✓  Gespielt'}
+        </button>
+        <button
+          onClick={() => onDelete(song.id, song.title)}
+          disabled={deleting || toggling}
+          aria-label="Song löschen"
+          className="p-3 rounded-2xl text-muted border border-champagne hover:border-red-300 hover:text-red-500 hover:bg-red-50 transition-all active:scale-95 disabled:opacity-30"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
+            <path fillRule="evenodd" d="M8.75 1A2.75 2.75 0 006 3.75v.443c-.795.077-1.584.176-2.365.298a.75.75 0 10.23 1.482l.149-.022.841 10.518A2.75 2.75 0 007.596 19h4.807a2.75 2.75 0 002.742-2.53l.841-10.519.149.023a.75.75 0 00.23-1.482A41.03 41.03 0 0014 4.193V3.75A2.75 2.75 0 0011.25 1h-2.5zM10 4c.84 0 1.673.025 2.5.075V3.75c0-.69-.56-1.25-1.25-1.25h-2.5c-.69 0-1.25.56-1.25 1.25v.325C8.327 4.025 9.16 4 10 4zM8.58 7.72a.75.75 0 00-1.5.06l.3 7.5a.75.75 0 101.5-.06l-.3-7.5zm4.34.06a.75.75 0 10-1.5-.06l-.3 7.5a.75.75 0 101.5.06l.3-7.5z" clipRule="evenodd" />
+          </svg>
         </button>
       </div>
     </div>
