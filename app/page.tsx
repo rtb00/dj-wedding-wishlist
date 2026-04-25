@@ -22,9 +22,14 @@ export default function GuestPage() {
   const [votingId, setVotingId] = useState<number | null>(null);
 
   const fetchSongs = useCallback(async () => {
-    const res = await fetch('/api/songs');
-    if (res.ok) {
-      setSongs(await res.json());
+    try {
+      const res = await fetch('/api/songs');
+      if (res.ok) {
+        setSongs(await res.json());
+      }
+    } catch {
+      // Network error – keep existing songs
+    } finally {
       setLoading(false);
     }
   }, []);
@@ -46,27 +51,32 @@ export default function GuestPage() {
     if (!title.trim() || !artist.trim() || submitting) return;
 
     setSubmitting(true);
-    const res = await fetch('/api/songs', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: title.trim(), artist: artist.trim() }),
-    });
-    const data = await res.json();
-    setSubmitting(false);
+    try {
+      const res = await fetch('/api/songs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title.trim(), artist: artist.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
 
-    if (!res.ok) {
-      setMessage({ text: data.error, ok: false });
-      return;
-    }
+      if (!res.ok) {
+        setMessage({ text: data.error ?? 'Ein Fehler ist aufgetreten. Bitte nochmal versuchen.', ok: false });
+        return;
+      }
 
-    setTitle('');
-    setArtist('');
-    if (data.duplicate) {
-      setMessage({ text: 'Dieser Song ist schon da – deine Stimme wurde gezählt! 👍', ok: true });
-    } else {
-      setMessage({ text: 'Song vorgeschlagen – du bist dabei! 🎵', ok: true });
+      setTitle('');
+      setArtist('');
+      if (data.duplicate) {
+        setMessage({ text: 'Dieser Song ist schon da – deine Stimme wurde gezählt! 👍', ok: true });
+      } else {
+        setMessage({ text: 'Song vorgeschlagen – du bist dabei! 🎵', ok: true });
+      }
+      fetchSongs();
+    } catch {
+      setMessage({ text: 'Verbindungsfehler. Bitte nochmal versuchen.', ok: false });
+    } finally {
+      setSubmitting(false);
     }
-    fetchSongs();
   }
 
   async function handleVote(song: Song) {

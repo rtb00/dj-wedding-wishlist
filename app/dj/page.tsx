@@ -28,9 +28,14 @@ export default function DJPage() {
   }, []);
 
   const fetchSongs = useCallback(async () => {
-    const res = await fetch('/api/songs');
-    if (res.ok) {
-      setSongs(await res.json());
+    try {
+      const res = await fetch('/api/songs');
+      if (res.ok) {
+        setSongs(await res.json());
+      }
+    } catch {
+      // Network error – ignore
+    } finally {
       setLoading(false);
     }
   }, []);
