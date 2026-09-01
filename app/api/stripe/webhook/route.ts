@@ -25,8 +25,8 @@ export async function POST(req: NextRequest) {
   try {
     event = stripe.webhooks.constructEvent(raw, sig, secret);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : 'invalid';
-    return NextResponse.json({ error: `bad signature: ${msg}` }, { status: 400 });
+    console.warn('[stripe-webhook] bad signature', err instanceof Error ? err.message : 'unknown');
+    return NextResponse.json({ error: 'bad signature' }, { status: 400 });
   }
 
   await initDB();
@@ -109,9 +109,20 @@ async function handleCheckoutCompleted(stripe: Stripe, sessionObj: Stripe.Checko
   // hier keine zusätzliche Prüfung nötig.
   const slug = sessionObj.metadata?.slug;
   if (slug) {
-    await sql`
-      UPDATE events SET unlocked_at = NOW() WHERE slug = ${slug} AND unlocked_at IS NULL
-    `;
+    // Die Feier wurde beim Checkout serverseitig gegen die DB validiert und
+    // ihre id in den Metadaten mitgeschrieben — hier beide Kriterien gegen
+    // prüfen, damit ein manipuliertes slug-Metadatum nichts freischalten kann.
+    const eventId = Number(sessionObj.metadata?.event_id ?? NaN);
+    if (Number.isInteger(eventId) && eventId > 0) {
+      await sql`
+        UPDATE events SET unlocked_at = NOW()
+        WHERE slug = ${slug} AND id = ${eventId} AND unlocked_at IS NULL
+      `;
+    } else {
+      await sql`
+        UPDATE events SET unlocked_at = NOW() WHERE slug = ${slug} AND unlocked_at IS NULL
+      `;
+    }
   }
 
   // Der DJ-Kaufweg schenkt dem Käufer ein Event-Guthaben als Kernanreiz für
@@ -125,14 +136,17 @@ async function handleCheckoutCompleted(stripe: Stripe, sessionObj: Stripe.Checko
 
 // Maps a Stripe price ID back to our internal tier. Built from env at call time
 // so it reflects whatever STRIPE_PRICE_* vars are configured in this environment.
-function tierForPrice(priceId: string | null): 'pro' | 'studio' {
-  if (!priceId) return 'pro';
+// Fail-closed: unbekannte Price-IDs ergeben null — sonst würde jede versehentlich
+// neu angelegte, nicht konfigurierte Preis-ID stillschweigend Pro-Status
+// verleihen.
+function tierForPrice(priceId: string | null): 'pro' | 'studio' | null {
+  if (!priceId) return null;
   const map: Record<string, 'pro' | 'studio'> = {};
   if (process.env.STRIPE_PRICE_PRO_MONTHLY) map[process.env.STRIPE_PRICE_PRO_MONTHLY] = 'pro';
   if (process.env.STRIPE_PRICE_PRO_YEARLY) map[process.env.STRIPE_PRICE_PRO_YEARLY] = 'pro';
   if (process.env.STRIPE_PRICE_STUDIO_MONTHLY) map[process.env.STRIPE_PRICE_STUDIO_MONTHLY] = 'studio';
   if (process.env.STRIPE_PRICE_STUDIO_YEARLY) map[process.env.STRIPE_PRICE_STUDIO_YEARLY] = 'studio';
-  return map[priceId] ?? 'pro';
+  return map[priceId] ?? null;
 }
 
 async function handleSubscriptionChange(sub: Stripe.Subscription) {
@@ -166,6 +180,11 @@ async function handleSubscriptionChange(sub: Stripe.Subscription) {
   // Resolve the tier from the purchased price instead of hardcoding 'pro',
   // so pro and studio subscriptions land on the correct plan.
   const tier = tierForPrice(priceId);
+  if (!tier) {
+    // Unbekannte/nicht konfigurierte Price-ID: nichts ändern statt fail-open.
+    console.warn('[stripe-webhook] unknown price id on subscription', { subId: sub.id, priceId });
+    return;
+  }
   const plan = isActive ? tier : sub.status === 'canceled' ? 'free' : tier;
 
   await sql`

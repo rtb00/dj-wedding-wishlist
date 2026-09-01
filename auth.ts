@@ -6,6 +6,7 @@ import PostgresAdapter from '@auth/pg-adapter';
 import { Pool } from 'pg';
 import bcrypt from 'bcryptjs';
 import { authConfig } from './auth.config';
+import { isRateLimited } from './app/lib/rate-limit';
 
 declare module 'next-auth' {
   interface Session {
@@ -117,6 +118,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const email = typeof credentials?.email === 'string' ? credentials.email.trim().toLowerCase() : '';
         const password = typeof credentials?.password === 'string' ? credentials.password : '';
         if (!email || !password) return null;
+
+        // Brute-Force/Credential-Stuffing-Bremse: pro E-Mail maximal 10
+        // Loginversuche pro 5 Minuten (in-memory, pro Serverless-Instanz —
+        // besser als nichts, ein verteiltes Limit ist der Folge-Schritt).
+        if (isRateLimited(`login:${email}`, 10, 5 * 60_000)) return null;
 
         await ensureAuthSchema();
         const { rows } = await pool.query<{

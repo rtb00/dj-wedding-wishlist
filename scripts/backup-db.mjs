@@ -5,14 +5,21 @@
 // Zweck: Schnelles Sicherheitsnetz vor riskanten Migrationen oder Bulk-Deletes.
 //
 // Aufruf:
-//   node scripts/backup-db.mjs                  # speichert nach backups/YYYY-MM-DD-HHmmss/
-//   node scripts/backup-db.mjs --out=mybackup   # custom Ordner
+//   node scripts/backup-db.mjs                  # speichert nach ~/.beatcontrol-backups/YYYY-MM-DD-HHmmss/
+//   node scripts/backup-db.mjs --out=mybackup   # custom Ordner (relativ zum Backup-Root)
+//   BEATCONTROL_BACKUP_DIR=/pfad node scripts/backup-db.mjs
+//
+// Sicherheitsrelevant: Backups enthalten Klardaten (E-Mails, Namen, IPs).
+// Standard-Ziel ist bewusst AUSSERHALB des Projektordners — ein Dump im Repo
+// liegt einem `git add -f`, einem ZIP des Projektordners oder einem
+// versehentlichen Entfernen der .gitignore-Zeile unmittelbar offen.
 //
 // Restore: kein Auto-Restore — bewusste manuelle Wiederherstellung, weil sonst
 // versehentliche Restores in Production-Inkonsistenzen führen.
 
 import { Client } from 'pg';
 import { readFileSync, mkdirSync, writeFileSync } from 'fs';
+import os from 'os';
 import path from 'path';
 
 try {
@@ -29,9 +36,13 @@ if (!cs) {
   process.exit(1);
 }
 
+const backupRoot = process.env.BEATCONTROL_BACKUP_DIR || path.join(os.homedir(), '.beatcontrol-backups');
 const customOut = process.argv.find((a) => a.startsWith('--out='))?.split('=')[1];
 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const outDir = path.resolve('backups', customOut ?? ts);
+const outDir = path.resolve(backupRoot, customOut ?? ts);
+if (outDir.startsWith(process.cwd() + path.sep)) {
+  console.warn('⚠️  Backup-Ziel liegt im Projektordner — verschiebe es nach außerhalb (Datenschutz).');
+}
 mkdirSync(outDir, { recursive: true });
 
 const TABLES = [

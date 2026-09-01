@@ -32,25 +32,30 @@ export async function GET(
 
   let brandingName: string | null = null;
   let brandingLogoUrl: string | null = null;
-  // Nur Team (studio) ist Whitelabel: dort verschwindet der BeatControl-Hinweis
-  // auf der Gäste-Seite komplett.
-  let whitelabel = false;
-  const ownerPlan = row.owner_plan
-    ? {
-        plan: row.owner_plan,
-        plan_status: row.owner_plan_status,
-        current_period_end: row.owner_current_period_end,
+    // Nur Team (studio) ist Whitelabel: dort verschwindet der BeatControl-Hinweis
+    // auf der Gäste-Seite komplett.
+    let whitelabel = false;
+    const ownerPlan = row.owner_plan
+      ? {
+          plan: row.owner_plan,
+          plan_status: row.owner_plan_status,
+          current_period_end: row.owner_current_period_end,
+        }
+      : null;
+    if (ownerPlan) {
+      const plan = getEffectivePlan(ownerPlan);
+      // Per Guthaben freigeschaltete Events tragen wie Event-Pass-Events das DJ-Branding.
+      if (getPlanLimits(plan).branding || row.credit_redeemed === true) {
+        brandingName = row.owner_branding_name ?? null;
+        // Legacy-Logos mit http:// werden von der CSP blockiert — nicht
+        // ausliefern, sonst bricht das Layout (leeres <img>).
+        brandingLogoUrl =
+          typeof row.owner_branding_logo_url === 'string' && row.owner_branding_logo_url.startsWith('https://')
+            ? row.owner_branding_logo_url
+            : null;
       }
-    : null;
-  if (ownerPlan) {
-    const plan = getEffectivePlan(ownerPlan);
-    // Per Guthaben freigeschaltete Events tragen wie Event-Pass-Events das DJ-Branding.
-    if (getPlanLimits(plan).branding || row.credit_redeemed === true) {
-      brandingName = row.owner_branding_name ?? null;
-      brandingLogoUrl = row.owner_branding_logo_url ?? null;
+      whitelabel = plan === 'studio';
     }
-    whitelabel = plan === 'studio';
-  }
 
   const unlocked = isUnlocked(ownerPlan, row.credit_redeemed === true, row.unlocked_at);
 
@@ -85,12 +90,16 @@ export async function PATCH(
 
   await initDB();
 
-  const body = await req.json();
+  const body = await req.json().catch(() => ({}));
   const { active, title, event_date } = body as {
     active?: boolean;
     title?: string;
     event_date?: string | null;
   };
+
+  if (title !== undefined && (typeof title !== 'string' || title.trim().length > 200)) {
+    return NextResponse.json({ error: 'title too long' }, { status: 400 });
+  }
 
   let normalizedDate: string | null | undefined = undefined;
   if (event_date === null) {

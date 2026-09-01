@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createHash } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import { initDB, sql } from '@/app/lib/db';
 import { getFingerprint } from '@/app/lib/fingerprint';
 import { readOrCreateGuestId, attachGuestCookie } from '@/app/lib/guest-id';
 import { isRateLimited } from '@/app/lib/rate-limit';
 import { containsProfanity } from '@/app/lib/profanity';
 import { getSongSuggestions } from '@/app/lib/ai';
+import { sanitizeImageUrl, clientIpHash } from '@/app/lib/security';
 import { auth } from '@/auth';
 import {
   FREE_VISIBLE_FOREIGN_SONGS,
@@ -89,7 +90,13 @@ export async function GET(
       if (!isOwner) view = 'guest';
     } else {
       const djToken = url.searchParams.get('dj');
-      const hasValidToken = !!djToken && djToken === evt.dj_token;
+      // Timing-sicherer Vergleich (Capability-Token, keine DB-WHERE-Compare):
+      // gleiche Länge erzwingen, sonst wirft timingSafeEqual.
+      const hasValidToken =
+        !!djToken &&
+        typeof evt.dj_token === 'string' &&
+        djToken.length === evt.dj_token.length &&
+        timingSafeEqual(Buffer.from(djToken), Buffer.from(evt.dj_token));
       if (!isOwner && !hasValidToken) view = 'guest';
     }
   }
@@ -141,7 +148,13 @@ export async function GET(
     GROUP BY s.id
     ORDER BY s.played ASC, vote_count DESC, s.created_at ASC
   `;
-  const all = rows as SongRow[];
+  const all = (rows as SongRow[]).map((row) => ({
+    ...row,
+    // Legacy-Zeilen können noch freie Album-Art-URLs tragen (vor der
+    // Sanitizing-Einführung gespeichert) — auch beim Lesen filtern, sonst
+    // rendern sie als Tracking-Pixel/verstörende Bilder auf Gästescreens.
+    album_art_url: sanitizeImageUrl(row.album_art_url),
+  }));
 
   const visibleIds = new Set<number>();
 
@@ -256,7 +269,10 @@ export async function POST(
   function json(payload: unknown, init?: ResponseInit) {
     return attachGuestCookie(NextResponse.json(payload, init), guestId, guestIdIsNew);
   }
-  const body = await req.json();
+  const body = await req.json().catch(() => null);
+  if (!body || typeof body !== 'object') {
+    return json({ error: 'Ungültige Anfrage' }, { status: 400 });
+  }
 
   const { title, artist, deezerId, albumArt } = body as {
     title: string;
@@ -274,6 +290,32 @@ export async function POST(
 
   if (containsProfanity(title) || containsProfanity(artist)) {
     return json({ error: 'Bitte keine anstößigen Inhalte.' }, { status: 422 });
+  }
+
+  // Cover-URL: nur https auf dem Deezer-CDN. Gäste schicken den Wert frei im
+  // Body mit — ungefiltert würde jede beliebige URL später als <img src> auf
+  // Gäste- und DJ-Bildschirmen geladen (Tracking-Pixel, anstößige Inhalte).
+  const safeAlbumArt = sanitizeImageUrl(albumArt);
+
+  const ipHash = clientIpHash(req);
+
+  // Tagesdeckel pro Client-IP: begrenzt Song-Spam über rotierende Gäste-Cookies
+  // (der 3-Song-Limit-Check unten hängt am spoofbaren Fingerprint). Bewusst
+  // großzügig (Feiern mit 100+ Gästen teilen sich oft eine Venue-IP), per Env
+  // überschreibbar.
+  const MAX_SONGS_PER_IP_PER_DAY = Number.parseInt(
+    process.env.BEATCONTROL_MAX_SONGS_PER_IP_DAY ?? '100',
+    10
+  );
+  const { rows: ipSpamRows } = await sql`
+    SELECT COUNT(*)::int AS cnt
+    FROM songs
+    WHERE event_id = (SELECT id FROM events WHERE slug = ${params.slug})
+      AND ip_hash = ${ipHash}
+      AND created_at > NOW() - INTERVAL '24 hours'
+  `;
+  if ((ipSpamRows[0]?.cnt ?? 0) >= MAX_SONGS_PER_IP_PER_DAY) {
+    return json({ error: 'rate_limited' }, { status: 429 });
   }
 
   const { rows: eventRows } = await sql`
@@ -295,7 +337,7 @@ export async function POST(
     if (dupeRows.length > 0) {
       const songId = dupeRows[0].id;
       try {
-        await sql`INSERT INTO votes (song_id, voter_ip) VALUES (${songId}, ${fp})`;
+        await sql`INSERT INTO votes (song_id, voter_ip, ip_hash) VALUES (${songId}, ${fp}, ${ipHash})`;
       } catch {
         // Already voted — ignore
       }
@@ -315,7 +357,7 @@ export async function POST(
     if (manualDupe.length > 0) {
       const songId = manualDupe[0].id;
       try {
-        await sql`INSERT INTO votes (song_id, voter_ip) VALUES (${songId}, ${fp})`;
+        await sql`INSERT INTO votes (song_id, voter_ip, ip_hash) VALUES (${songId}, ${fp}, ${ipHash})`;
       } catch {
         // Already voted — ignore
       }
@@ -339,14 +381,15 @@ export async function POST(
   }
 
   const { rows: inserted } = await sql`
-    INSERT INTO songs (event_id, title, artist, deezer_id, album_art_url, submitter_ip)
+    INSERT INTO songs (event_id, title, artist, deezer_id, album_art_url, submitter_ip, ip_hash)
     VALUES (
       ${eventId},
       ${title.trim()},
       ${artist.trim()},
       ${deezerId ?? null},
-      ${albumArt ?? null},
-      ${fp}
+      ${safeAlbumArt},
+      ${fp},
+      ${ipHash}
     )
     RETURNING id
   `;
@@ -354,20 +397,33 @@ export async function POST(
 
   // Auto-vote for submitter
   try {
-    await sql`INSERT INTO votes (song_id, voter_ip) VALUES (${songId}, ${fp})`;
+    await sql`INSERT INTO votes (song_id, voter_ip, ip_hash) VALUES (${songId}, ${fp}, ${ipHash})`;
   } catch {
     // Ignore
   }
 
-  // Fire-and-forget: enrich with AI song suggestions after response is sent
+  // Fire-and-forget: enrich with AI song suggestions after response is sent.
+  // Budget pro Feier: ohne Deckel triggert jeder Song-POST einen LLM-Call —
+  // Spam wäre ein unbegrenzter Kostenvektor auf GROQ_API_KEY. 30 Enrichments
+  // pro Feier reichen für die Praxis (die Gästeauswahl zeigt ohnehin drei).
   const titleForAI = title.trim();
   const artistForAI = artist.trim();
   ;(async () => {
     try {
+      const { rows: budget } = await sql`
+        SELECT COUNT(*)::int AS cnt FROM songs
+        WHERE event_id = ${eventId} AND suggestions IS NOT NULL
+      `;
+      if ((budget[0]?.cnt ?? 0) >= 30) return;
+
       const suggestions = await getSongSuggestions(titleForAI, artistForAI);
+      // Vorschläge landen ungefiltert auf der Gäste-Seite — derselbe
+      // Profanity-Check wie bei Songtiteln gilt also auch hier.
+      const clean = suggestions.filter((s) => !containsProfanity(s)).slice(0, 3);
+      if (clean.length === 0) return;
       await sql`
         UPDATE songs
-        SET suggestions = ${JSON.stringify(suggestions)}
+        SET suggestions = ${JSON.stringify(clean)}
         WHERE id = ${songId}
       `;
     } catch {

@@ -66,6 +66,13 @@ export async function initDB() {
   // Column migrations for existing installs (idempotent)
   await sql`ALTER TABLE songs ADD COLUMN IF NOT EXISTS suggestions TEXT`;
 
+  // Gehashte Client-IP für Tagesdeckeln gegen Ballot-Stuffing/Song-Spam
+  // (siehe app/lib/security.ts — keine Klartext-IPs in der DB).
+  await sql`ALTER TABLE votes ADD COLUMN IF NOT EXISTS ip_hash TEXT`;
+  await sql`ALTER TABLE songs ADD COLUMN IF NOT EXISTS ip_hash TEXT`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_votes_ip_hash ON votes(ip_hash, created_at)`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_songs_ip_hash ON songs(ip_hash, created_at)`;
+
   // Auth.js tables
   await sql`
     CREATE TABLE IF NOT EXISTS users (

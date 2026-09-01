@@ -19,3 +19,6 @@ scripts/.bc-*
 test-results/
 playwright-report/
 
+
+# CRM-Leads: PII (Namen, Handynummern, E-Mails) — niemals ins öffentliche Repo
+outreach/*.csv

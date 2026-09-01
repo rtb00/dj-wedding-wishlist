@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { initDB, sql } from '@/app/lib/db';
 import { auth } from '@/auth';
 import { getStripe, isStripeConfigured } from '@/app/lib/stripe';
+import { trustedOrigin } from '@/app/lib/security';
 
 export async function POST(req: NextRequest) {
   if (!isStripeConfigured()) {
@@ -22,7 +23,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'no stripe customer' }, { status: 400 });
   }
 
-  const origin = req.headers.get('origin') ?? new URL(req.url).origin;
+  // Origin-Allowlist wie im Checkout: der Header ist client-frei wählbar.
+  const origin = trustedOrigin(req.headers.get('origin'), req.url);
 
   const portal = await getStripe().billingPortal.sessions.create({
     customer: customerId,

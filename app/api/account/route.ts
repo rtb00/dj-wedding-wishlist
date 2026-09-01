@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { initDB, sql } from '@/app/lib/db';
 import { auth } from '@/auth';
+import bcrypt from 'bcryptjs';
 import { getStripe, isStripeConfigured } from '@/app/lib/stripe';
 import { validateSubdomain } from '@/app/lib/branding';
 import { getEffectivePlan } from '@/app/lib/plans';
@@ -47,8 +48,10 @@ export async function PATCH(req: NextRequest) {
 
   if (brandingLogoUrl !== undefined) {
     const trimmed = typeof brandingLogoUrl === 'string' ? brandingLogoUrl.trim() : '';
-    if (trimmed && !/^https?:\/\//i.test(trimmed)) {
-      return NextResponse.json({ error: 'brandingLogoUrl must be http(s) URL' }, { status: 400 });
+    // https-only: http-Logos werden durch die Content-Security-Policy auf der
+    // Gäste-Seite ohnehin blockiert (Logo würde still verschwinden).
+    if (trimmed && !/^https:\/\//i.test(trimmed)) {
+      return NextResponse.json({ error: 'brandingLogoUrl muss eine https-URL sein.' }, { status: 400 });
     }
     if (trimmed.length > 500) {
       return NextResponse.json({ error: 'brandingLogoUrl too long' }, { status: 400 });
@@ -95,7 +98,7 @@ export async function PATCH(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE() {
+export async function DELETE(req: NextRequest) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -106,9 +109,24 @@ export async function DELETE() {
 
   // Look up Stripe customer first so we can clean up after the row is gone.
   const { rows } = await sql`
-    SELECT stripe_customer_id FROM users WHERE id = ${userId}
+    SELECT stripe_customer_id, password FROM users WHERE id = ${userId}
   `;
-  const stripeCustomerId = rows[0]?.stripe_customer_id as string | null | undefined;
+  const user = rows[0];
+  const stripeCustomerId = user?.stripe_customer_id as string | null | undefined;
+
+  // Sicherheitsrelevant: Kontolöschung ist irreversibel (Events, Wünsche,
+  // Stripe-Kunde kaskadieren mit). Ein gestohlener Session-Cookie reichte
+  // bisher dafür — daher Passwortbestätigung, wenn ein Passwort existiert.
+  if (user?.password) {
+    const body = await req.json().catch(() => ({}));
+    const supplied = typeof (body as { password?: unknown }).password === 'string'
+      ? (body as { password: string }).password
+      : '';
+    const ok = await bcrypt.compare(supplied, user.password);
+    if (!ok) {
+      return NextResponse.json({ error: 'Passwortbestätigung erforderlich.' }, { status: 403 });
+    }
+  }
 
   // Cascades take care of events → songs → votes, plus auth tables.
   await sql`DELETE FROM users WHERE id = ${userId}`;

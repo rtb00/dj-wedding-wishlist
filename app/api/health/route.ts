@@ -25,12 +25,14 @@ export async function GET() {
       }
     );
   } catch (err) {
+    // Details nur serverseitig — interne DB-Fehlermeldungen (Host, Region,
+    // SSL-Details von @vercel/postgres) gehören nicht in öffentliche Antworten.
+    console.error('[health] db check failed', err);
     return NextResponse.json(
       {
         status: 'error',
         timestamp: new Date().toISOString(),
         latencyMs: Date.now() - started,
-        error: err instanceof Error ? err.message : 'unknown',
       },
       {
         status: 503,

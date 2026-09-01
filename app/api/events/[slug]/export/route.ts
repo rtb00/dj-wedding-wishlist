@@ -7,8 +7,12 @@ import { isUnlocked } from '@/app/lib/visibility';
 function csvEscape(val: unknown): string {
   if (val === null || val === undefined) return '';
   const s = String(val);
-  if (/[",\n;]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
+  // Spreadsheet-Formel-Injection: Zellen, die mit = + - @ Tab oder CR beginnen,
+  // werden von Excel/LibreOffice als Formel ausgeführt (=WEBSERVICE(...) leakt
+  // Daten an fremde Server). Ein führendes ' erzwingt Text-Interpretation.
+  const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  if (/[",\n;]/.test(safe)) return `"${safe.replace(/"/g, '""')}"`;
+  return safe;
 }
 
 export async function GET(

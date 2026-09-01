@@ -14,7 +14,7 @@ export async function GET() {
   const { rows } = await sql`
     SELECT id, name, email, plan, plan_status, current_period_end,
            cancel_at_period_end, branding_name, branding_logo_url, subdomain,
-           event_credits, is_couple
+           event_credits, is_couple, password
     FROM users
     WHERE id = ${session.user.id}
   `;
@@ -46,6 +46,9 @@ export async function GET() {
     // Merkmal aus der Registrierung: ein Paar gehört nach /feier, nicht ins
     // DJ-Dashboard.
     isCouple: user.is_couple === true,
+    // Nur ein Ja/Nein-Flag für den Lösch-Dialog (Passwortbestätigung) — der
+    // Hash selbst verlässt den Server nicht.
+    hasPassword: !!user.password,
     limits: {
       maxEvents: Number.isFinite(limits.maxEvents) ? limits.maxEvents : null,
       maxSongs: Number.isFinite(limits.maxSongs) ? limits.maxSongs : null,

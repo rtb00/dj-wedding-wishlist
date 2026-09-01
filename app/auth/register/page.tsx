@@ -50,7 +50,11 @@ async function startPlanCheckout(tier: string): Promise<boolean> {
   return false;
 }
 
-async function startCoupleCheckout(slug: string, unlockGift: boolean): Promise<boolean> {
+async function startCoupleCheckout(
+  slug: string,
+  unlockGift: boolean,
+  onFail?: () => void
+): Promise<boolean> {
   try {
     const res = await fetch('/api/stripe/checkout', {
       method: 'POST',
@@ -62,8 +66,11 @@ async function startCoupleCheckout(slug: string, unlockGift: boolean): Promise<b
       window.location.href = data.url;
       return true;
     }
+    // Scheitern sichtbar machen — vorher landete der Nutzer stumm wieder auf
+    // der Registrierungsseite (z.B. wenn die Feier inzwischen gelöscht wurde).
+    onFail?.();
   } catch {
-    /* fällt unten auf die normale Weiterleitung zurück */
+    onFail?.();
   }
   return false;
 }
@@ -81,6 +88,9 @@ function RegisterPageInner() {
   const [email, setEmail] = useState('');
   // Kommt der Weg aus dem Brautpaar-Funnel, gehört das Konto einem Paar.
   const [isCouple, setIsCouple] = useState(false);
+  // Scheiternder Auto-Checkout (Feier inzwischen gelöscht o.ä.) — muss sichtbar
+  // sein, sonst wirkt die Seite wie ein stiller Loop.
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
   // Eine Feier zum Freischalten führt direkt in ihren Checkout. Sonst führt
   // ein ausgewählter Plan zur Buchung, daran ändert das Paar-Merkmal nichts.
@@ -104,7 +114,11 @@ function RegisterPageInner() {
       .then((r) => (r.ok ? r.json() : null))
       .then((me) => {
         if (cancelled || !me) return;
-        startCoupleCheckout(slug, isGiftPurchase);
+        startCoupleCheckout(slug, isGiftPurchase, () =>
+          setCheckoutError(
+            'Die Feier zum Freischalten konnte nicht gefunden werden. Bitte prüfe den Link oder wende dich an den Veranstalter.'
+          )
+        );
       })
       .catch(() => {});
     return () => {
@@ -184,7 +198,11 @@ function RegisterPageInner() {
         return;
       }
       if (slug) {
-        const started = await startCoupleCheckout(slug, isGiftPurchase);
+        const started = await startCoupleCheckout(slug, isGiftPurchase, () =>
+          setError(
+            'Die Feier zum Freischalten konnte nicht gefunden werden. Bitte prüfe den Link oder wende dich an den Veranstalter.'
+          )
+        );
         if (started) return;
       } else if (plan) {
         // Wer mit Tarif-Vorwahl kommt, soll direkt zur Kasse und nicht über
@@ -223,9 +241,13 @@ function RegisterPageInner() {
             </p>
           </div>
         )}
+        {checkoutError && (
+          <p className="mb-6 rounded-2xl border border-danger/40 bg-danger/10 px-4 py-3 text-center text-sm text-danger">
+            {checkoutError}
+          </p>
+        )}
         {!slug && plan && (
-          <div className="mb-6 rounded-2xl border border-turquoise/40 bg-turquoise/10 px-4 py-3 text-center">
-            <p className="text-[10px] uppercase tracking-widest text-turquoise font-semibold mb-1">
+          <div className="mb-6 rounded-2xl border border-turquoise/40 bg-turquoise/10 px-4 py-3 text-center">            <p className="text-[10px] uppercase tracking-widest text-turquoise font-semibold mb-1">
               Ausgewählter Plan
             </p>
             <p className="text-sm text-fg font-semibold">{PLAN_LABEL[plan]}</p>

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { initDB, sql } from '@/app/lib/db';
 import { auth } from '@/auth';
 import { getStripe, isStripeConfigured, STRIPE_PRICE_IDS, type StripeTier } from '@/app/lib/stripe';
+import { trustedOrigin } from '@/app/lib/security';
 
 export async function POST(req: NextRequest) {
   if (!isStripeConfigured()) {
@@ -45,6 +46,22 @@ export async function POST(req: NextRequest) {
   const stripe = getStripe();
   const userId = session.user.id;
 
+  // Sicherheitsrelevant: der slug kommt vom Client. Ohne Existenzprüfung
+  // würde ein erfundener slug bis in den Stripe-Webhook durchgereicht und
+  // dort als "unlock"-Metadatum akzeptiert. Nur echte Feiern sind kaufbar.
+  let eventId: number | null = null;
+  let eventIsOwned = false;
+  if (slug) {
+    const { rows: slugRows } = await sql`
+      SELECT id, dj_id FROM events WHERE slug = ${slug}
+    `;
+    if (slugRows.length === 0) {
+      return NextResponse.json({ error: 'event not found' }, { status: 400 });
+    }
+    eventId = slugRows[0].id;
+    eventIsOwned = slugRows[0].dj_id === userId;
+  }
+
   // Sicherheitsrelevant: unlock_gift kommt aus dem Request-Body und ist damit
   // vom Client frei wählbar. Das Guthaben ist exklusiv dem DJ-Kaufweg
   // vorbehalten (DJ ohne Konto registriert sich im Zuge des Kaufs). Ohne
@@ -53,11 +70,8 @@ export async function POST(req: NextRequest) {
   // Ein Guthaben gibt es daher nur, wenn die Feier existiert und der Käufer
   // nicht ihr eigener Besitzer ist.
   let unlockGift = false;
-  if (unlockGiftRequested && slug) {
-    const { rows: giftEventRows } = await sql`
-      SELECT dj_id FROM events WHERE slug = ${slug}
-    `;
-    unlockGift = giftEventRows.length > 0 && giftEventRows[0].dj_id !== userId;
+  if (unlockGiftRequested && slug && eventId !== null && !eventIsOwned) {
+    unlockGift = true;
   }
 
   // Lazy-create stripe customer
@@ -77,7 +91,10 @@ export async function POST(req: NextRequest) {
     `;
   }
 
-  const origin = req.headers.get('origin') ?? new URL(req.url).origin;
+  // Der Origin-Header ist bei direkten HTTP-Calls frei wählbar. Ohne Allowlist
+  // könnte ein Angreifer eine Checkout-Session mit Rückweg auf seine eigene
+  // Domain erzeugen und die Stripe-URL als Phishing-Link verteilen.
+  const origin = trustedOrigin(req.headers.get('origin'), req.url);
 
   const isCouplePass = tier === 'couple_pass';
 
@@ -110,7 +127,7 @@ export async function POST(req: NextRequest) {
       user_id: userId,
       tier,
       event_date: eventDate ?? '',
-      ...(slug ? { slug } : {}),
+      ...(slug && eventId !== null ? { slug, event_id: String(eventId) } : {}),
       ...(unlockGift ? { gift_credit: '1' } : {}),
     },
     ...(isSubscription
@@ -121,7 +138,7 @@ export async function POST(req: NextRequest) {
               user_id: userId,
               tier,
               event_date: eventDate ?? '',
-              ...(slug ? { slug } : {}),
+              ...(slug && eventId !== null ? { slug, event_id: String(eventId) } : {}),
               ...(unlockGift ? { gift_credit: '1' } : {}),
             },
           },

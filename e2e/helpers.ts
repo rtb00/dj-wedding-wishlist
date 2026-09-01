@@ -190,6 +190,12 @@ export async function sendSubscriptionActive(
   customerId: string,
   currentPeriodEndUnix: number
 ): Promise<{ ok: boolean; status: number }> {
+  // tierForPrice ist seit dem Fail-Closed-Fix streng: unbekannte Price-IDs
+  // ändern den Plan nicht mehr. Der Helper nutzt deshalb die echte konfigurierte
+  // Pro-Price-ID aus .env.local, damit der Subscription-Flow greift.
+  const envFile = readFileSync(new URL('../.env.local', import.meta.url), 'utf8');
+  const priceMatch = envFile.match(/^STRIPE_PRICE_PRO_MONTHLY=(.+)$/m);
+  const proPriceId = priceMatch?.[1]?.trim() ?? 'price_e2e_fake';
   return sendSignedStripeEvent(request, 'customer.subscription.updated', {
     id: `sub_e2e_${randomUUID()}`,
     object: 'subscription',
@@ -201,7 +207,7 @@ export async function sendSubscriptionActive(
       object: 'list',
       data: [
         {
-          price: { id: 'price_e2e_fake', recurring: { interval: 'month' } },
+          price: { id: proPriceId, recurring: { interval: 'month' } },
           current_period_end: currentPeriodEndUnix,
         },
       ],

@@ -8,7 +8,7 @@
 //   Pro          29 €/Monat, 249 €/Jahr
 //   Team        149 €/Monat, 1488 €/Jahr
 import Stripe from 'stripe';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, chmodSync } from 'node:fs';
 
 const env = readFileSync(new URL('../.env.local', import.meta.url), 'utf8');
 const key = env.match(/^STRIPE_SECRET_KEY=(.+)$/m)?.[1]?.trim();
@@ -92,4 +92,26 @@ console.log('STRIPE_PRICE_PRO_MONTHLY=' + pProMonthly.id);
 console.log('STRIPE_PRICE_PRO_YEARLY=' + pProYearly.id);
 console.log('STRIPE_PRICE_STUDIO_MONTHLY=' + pTeamMonthly.id);
 console.log('STRIPE_PRICE_STUDIO_YEARLY=' + pTeamYearly.id);
-console.log('STRIPE_WEBHOOK_SECRET=' + hookSecretNote);
+
+// Sicherheitsrelevant: Stripe zeigt das Webhook-Secret nur EINMAL bei der
+// Anlage. Es wird direkt (und nur) in die gitignierte .env.local geschrieben —
+// weder Terminal-Ausgabe noch Loss bei Neuanlage.
+if (hook.secret) {
+  const envPath = new URL('../.env.local', import.meta.url);
+  let envContent = '';
+  try {
+    envContent = readFileSync(envPath, 'utf-8');
+  } catch {}
+  const line = `STRIPE_WEBHOOK_SECRET=${hook.secret}`;
+  if (/^STRIPE_WEBHOOK_SECRET=/m.test(envContent)) {
+    writeFileSync(envPath, envContent.replace(/^STRIPE_WEBHOOK_SECRET=.*$/m, line));
+  } else {
+    writeFileSync(envPath, envContent + (envContent.endsWith('\n') || !envContent ? '' : '\n') + line + '\n');
+  }
+  try {
+    chmodSync(envPath, 0o600);
+  } catch {}
+  console.log('STRIPE_WEBHOOK_SECRET=*** in .env.local eingetragen');
+} else {
+  console.log('STRIPE_WEBHOOK_SECRET=<vorhandenes Secret aus dem Stripe-Dashboard — Endpoint existierte schon>');
+}

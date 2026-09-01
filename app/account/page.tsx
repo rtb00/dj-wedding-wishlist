@@ -19,6 +19,7 @@ interface Me {
   brandingName: string | null;
   brandingLogoUrl: string | null;
   subdomain: string | null;
+  hasPassword?: boolean;
   limits: {
     maxEvents: number | null;
     maxSongs: number | null;
@@ -62,6 +63,7 @@ export default function AccountPage() {
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteText, setDeleteText] = useState('');
+  const [deletePassword, setDeletePassword] = useState('');
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -178,10 +180,20 @@ export default function AccountPage() {
       setDeleteError('Bitte tippe LÖSCHEN ein, um zu bestätigen.');
       return;
     }
+    // Konten mit Passwort verlangen die Passwortbestätigung — ein gestohlener
+    // Session-Cookie allein reicht dann nicht mehr für die Löschung.
+    if (me?.hasPassword && !deletePassword) {
+      setDeleteError('Bitte gib dein Passwort ein, um die Löschung zu bestätigen.');
+      return;
+    }
     setDeleting(true);
     setDeleteError(null);
     try {
-      const res = await fetch('/api/account', { method: 'DELETE' });
+      const res = await fetch('/api/account', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(me?.hasPassword ? { password: deletePassword } : {}),
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         setDeleteError(data.error ?? 'Konto konnte nicht gelöscht werden.');
@@ -626,6 +638,21 @@ export default function AccountPage() {
                 placeholder="LÖSCHEN"
                 className="w-full px-4 py-3 rounded-2xl border border-danger/40 bg-base text-fg placeholder:text-fg-muted/50 focus:outline-none focus:border-danger transition-colors"
               />
+              {me?.hasPassword && (
+                <div>
+                  <label htmlFor="delete-password" className="block text-sm text-fg mb-1.5">
+                    Passwort bestätigen
+                  </label>
+                  <input
+                    id="delete-password"
+                    type="password"
+                    value={deletePassword}
+                    onChange={(e) => setDeletePassword(e.target.value)}
+                    autoComplete="current-password"
+                    className="w-full px-4 py-3 rounded-2xl border border-danger/40 bg-base text-fg focus:outline-none focus:border-danger transition-colors"
+                  />
+                </div>
+              )}
               {deleteError && (
                 <p className="text-sm text-danger">{deleteError}</p>
               )}
@@ -643,6 +670,7 @@ export default function AccountPage() {
                   onClick={() => {
                     setShowDeleteConfirm(false);
                     setDeleteText('');
+                    setDeletePassword('');
                     setDeleteError(null);
                   }}
                   disabled={deleting}
